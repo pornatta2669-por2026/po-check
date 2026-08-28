@@ -743,7 +743,9 @@ tbody td{padding:10px 12px;border-bottom:1px solid #F5E9D6;vertical-align:middle
       <div class="fg"><label>เดือนเริ่มผ่อน *</label><input class="fi2" type="month" id="computer-start" style="width:100%"></div>
     </div>
     <div style="background:#F0F4FF;border-radius:10px;padding:12px 14px;margin-bottom:14px;font-size:13px;color:#1E3A5F" id="computer-preview">กรอกราคาและจำนวนงวดเพื่อดูตัวอย่างการคำนวณ</div>
-    <div class="fg"><label>ไฟล์สัญญา (PDF, แนบภายหลังได้)</label><input class="fi2" type="file" id="computer-contract-file" accept=".pdf" style="width:100%"></div>
+    <div class="fg"><label>ลิงก์ไฟล์สัญญา (Google Drive, แนบภายหลังได้)</label><input class="fi2" type="url" id="computer-contract-url" placeholder="วางลิงก์ไฟล์ Google Drive" style="width:100%">
+      <div style="font-size:11px;color:var(--muted);margin-top:4px">อัปโหลดไฟล์ที่ <a href="https://drive.google.com/drive/folders/1a5qvwCqFk2qcFijdLabjz-F9holEVSpu" target="_blank">โฟลเดอร์ CT_สัญญาผ่อนคอม</a> ก่อน แล้วคัดลอกลิงก์มาวาง</div>
+    </div>
     <div style="display:flex;gap:8px;margin-top:6px">
       <button class="btn btn-primary" id="computer-modal-btn" onclick="saveComputer()">💾 บันทึก</button>
       <button class="btn btn-ghost" onclick="closeM('m-computer')">ยกเลิก</button>
@@ -907,13 +909,6 @@ async function api(m,p,b){
   if(r.status===401){doLogout();return{ok:false}}
   return d
 }
-async function apiUpload(m,p,formData){
-  const r=await fetch(p,{method:m,headers:{'Authorization':`Bearer ${TOKEN}`},body:formData})
-  const d=await r.json()
-  if(r.status===401){doLogout();return{ok:false}}
-  return d
-}
-
 async function doLogin(){
   const em=g('l-em'),pw=document.getElementById('l-pw').value
   if(!em||!pw){showErr('กรุณากรอกข้อมูล');return}
@@ -1917,7 +1912,7 @@ function openComputerCreate(){
   document.getElementById('computer-price').value=''
   document.getElementById('computer-installments').value='10'
   document.getElementById('computer-start').value=''
-  document.getElementById('computer-contract-file').value=''
+  document.getElementById('computer-contract-url').value=''
   document.getElementById('computer-preview').textContent='กรอกราคาและจำนวนงวดเพื่อดูตัวอย่างการคำนวณ'
   document.getElementById('m-computer').classList.add('show')
 }
@@ -1932,7 +1927,7 @@ function openComputerEdit(id){
   document.getElementById('computer-price').value=rec[4]
   document.getElementById('computer-installments').value=rec[5]
   document.getElementById('computer-start').value=rec[8]
-  document.getElementById('computer-contract-file').value=''
+  document.getElementById('computer-contract-url').value=rec[10]||''
   computerPreview()
   document.getElementById('m-computer').classList.add('show')
 }
@@ -1954,11 +1949,10 @@ async function saveComputer(){
   setLoad('computer-modal-btn',false)
   if(!r.ok){toast(r.error||'เกิดข้อผิดพลาด','error');return}
   const recId=COMPUTER_EDIT_TARGET||r.id
-  const file=document.getElementById('computer-contract-file').files[0]
-  if(file){
-    const fd=new FormData();fd.append('file',file)
-    const ur=await apiUpload('PATCH',`/api/computer/${enc(recId)}/contract`,fd)
-    if(!ur.ok) toast('บันทึกรายการสำเร็จ แต่แนบสัญญาไม่สำเร็จ: '+(ur.error||''),'error')
+  const url=document.getElementById('computer-contract-url').value.trim()
+  if(url){
+    const ur=await api('PATCH',`/api/computer/${enc(recId)}/contract`,{url})
+    if(!ur.ok) toast('บันทึกรายการสำเร็จ แต่แนบลิงก์สัญญาไม่สำเร็จ: '+(ur.error||''),'error')
   }
   toast(COMPUTER_EDIT_TARGET?'บันทึกการแก้ไขแล้ว':'เพิ่มรายการแล้ว','success')
   closeM('m-computer')
@@ -1978,7 +1972,9 @@ function openComputerSchedule(id){
   const rec=C_COMPUTER.find(r=>r[0]===id)
   if(!rec) return
   document.getElementById('computer-sched-title').textContent=`📋 ตารางผ่อน — ${rec[2]} (${rec[1]})`
+  const slipFolderId=rec[11]
   document.getElementById('computer-sched-info').innerHTML=`ราคาเครื่อง ฿${num(rec[4])} · เครื่องที่ ${esc(rec[3])} · เริ่มผ่อน ${esc(rec[8])}`
+    +(slipFolderId?` · <a href="https://drive.google.com/drive/folders/${esc(slipFolderId)}" target="_blank">📁 เปิดโฟลเดอร์สลิปของรายการนี้</a>`:'')
   renderComputerScheduleRows(id)
   document.getElementById('m-computer-schedule').classList.add('show')
 }
@@ -1988,24 +1984,28 @@ function renderComputerScheduleRows(id){
     const label=Number(r[1])===0?'เงินดาวน์':'งวดที่ '+r[1]
     const paid=r[4]==='TRUE'
     const slipUrl=r[7]
-    return `<div class="po-item-row" style="align-items:center">
+    return `<div class="po-item-row" style="align-items:center;flex-wrap:wrap">
       <div><div style="font-weight:600;font-size:13px">${label} · ${esc(r[2])}</div><div style="font-size:12px;color:var(--muted)">฿${num(r[3])}</div></div>
-      <div style="display:flex;align-items:center;gap:6px">
-        ${slipUrl?`<button class="btn btn-ghost btn-sm" onclick="window.open('${esc(slipUrl)}','_blank')" title="ดูสลิป">📎</button>`:
-          `<input type="file" accept="image/*" id="computer-slip-${idx}" style="display:none" onchange="toggleComputerPaid(${idx},true)">
-           <button class="btn btn-ghost btn-sm" onclick="document.getElementById('computer-slip-${idx}').click()" title="แนบสลิปแล้วบันทึก">📎</button>`}
-        <button type="button" class="btn ${paid?'btn-green':'btn-ghost'} btn-sm" onclick="toggleComputerPaid(${idx},false)">${paid?'✅ จ่ายแล้ว':'⏳ ยังไม่จ่าย'}</button>
+      <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap">
+        ${slipUrl?`<button class="btn btn-ghost btn-sm" onclick="window.open('${esc(slipUrl)}','_blank')" title="ดูสลิป">📎 ดูสลิป</button>`:
+          `<input type="url" class="fi2" id="computer-sliplink-${idx}" placeholder="ลิงก์สลิป" style="width:130px;padding:5px 8px;font-size:11px">
+           <button class="btn btn-ghost btn-sm" onclick="saveComputerSlipLink(${idx})" title="บันทึกลิงก์สลิป">💾</button>`}
+        <button type="button" class="btn ${paid?'btn-green':'btn-ghost'} btn-sm" onclick="toggleComputerPaid(${idx})">${paid?'✅ จ่ายแล้ว':'⏳ ยังไม่จ่าย'}</button>
       </div>
     </div>`
   }).join('')
 }
-async function toggleComputerPaid(rowIdx,fromFileInput){
-  const fd=new FormData()
-  if(fromFileInput){
-    const fileEl=document.getElementById('computer-slip-'+rowIdx)
-    if(fileEl&&fileEl.files[0]) fd.append('file',fileEl.files[0])
-  }
-  const r=await apiUpload('PATCH',`/api/computer-schedule/${rowIdx}/paid`,fd)
+async function toggleComputerPaid(rowIdx){
+  const r=await api('PATCH',`/api/computer-schedule/${rowIdx}/paid`,{})
+  if(!r.ok){toast(r.error||'เกิดข้อผิดพลาด','error');return}
+  await loadComputer()
+  const row=C_COMPUTER_SCHEDULE[rowIdx-2]
+  if(row) renderComputerScheduleRows(row[0])
+}
+async function saveComputerSlipLink(rowIdx){
+  const url=document.getElementById('computer-sliplink-'+rowIdx).value.trim()
+  if(!url){toast('กรุณาวางลิงก์สลิป','error');return}
+  const r=await api('PATCH',`/api/computer-schedule/${rowIdx}/slip`,{url})
   if(!r.ok){toast(r.error||'เกิดข้อผิดพลาด','error');return}
   await loadComputer()
   const row=C_COMPUTER_SCHEDULE[rowIdx-2]

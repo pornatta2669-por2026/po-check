@@ -4,14 +4,11 @@ const cors    = require('cors')
 const { google } = require('googleapis')
 const path   = require('path')
 const crypto = require('crypto')
-const multer = require('multer')
 
 const app = express()
 app.use(cors())
 app.use(express.json({ limit: '10mb' }))
 app.use(express.static(path.join(__dirname)))
-
-const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 15 * 1024 * 1024 } })
 
 const SHEET_ID   = process.env.SPREADSHEET_ID
 const JWT_SECRET = process.env.JWT_SECRET || 'po-check-secret-2024'
@@ -114,14 +111,6 @@ function ga(){
   })
 }
 function drive(){ return google.drive({version:'v3',auth:ga()}) }
-async function driveUpload(name,parentId,buffer,mimeType){
-  const r=await drive().files.create({
-    requestBody:{name,parents:[parentId]},
-    media:{mimeType:mimeType||'application/octet-stream',body:require('stream').Readable.from(buffer)},
-    fields:'id,webViewLink'
-  })
-  return {id:r.data.id,url:r.data.webViewLink}
-}
 async function driveCreateFolder(name,parentId){
   const r=await drive().files.create({requestBody:{name,mimeType:'application/vnd.google-apps.folder',parents:[parentId]},fields:'id'})
   return r.data.id
@@ -453,24 +442,21 @@ app.delete('/api/computer/:id',auth,async(req,res)=>{
     res.json({ok:true})
   }catch(e){res.status(500).json({ok:false,error:e.message})}
 })
-app.patch('/api/computer/:id/contract',auth,upload.single('file'),async(req,res)=>{
+app.patch('/api/computer/:id/contract',auth,async(req,res)=>{
   try{
-    if(!req.file) return res.status(400).json({ok:false,error:'กรุณาแนบไฟล์'})
+    const url=(req.body.url||'').trim()
+    if(!/^https?:\/\//.test(url)) return res.status(400).json({ok:false,error:'กรุณาวางลิงก์ไฟล์ที่ถูกต้อง'})
     const rows=await readSheet('COMPUTER_INSTALLMENT!A2:N')
     const i=rows.findIndex(r=>r[0]===req.params.id)
     if(i===-1) return res.status(404).json({ok:false,error:'ไม่พบรายการ'})
     const row=rows[i]
-    const machineSuffix=Number(row[3])>1?' เครื่องที่'+row[3]:''
-    const ext=(req.file.originalname.match(/\.[^.]+$/)||['.pdf'])[0]
-    const name=`${row[1]}_สัญญาผ่อนคอม_${row[2]}${machineSuffix}${ext}`
-    const {id:fileId,url}=await driveUpload(name,CONTRACT_FOLDER_ID,req.file.buffer,req.file.mimetype)
-    const updated=[...row];updated[9]=fileId;updated[10]=url
+    const updated=[...row];updated[10]=url
     await updateRow('COMPUTER_INSTALLMENT',i+2,updated.slice(0,14))
-    await log(req.user,'COMPUTER_CONTRACT',`แนบสัญญาผ่อนคอม ${req.params.id} (${row[1]} ${row[2]})`)
+    await log(req.user,'COMPUTER_CONTRACT',`แนบลิงก์สัญญาผ่อนคอม ${req.params.id} (${row[1]} ${row[2]})`)
     res.json({ok:true,url})
   }catch(e){res.status(500).json({ok:false,error:e.message})}
 })
-app.patch('/api/computer-schedule/:rowIdx/paid',auth,upload.single('file'),async(req,res)=>{
+app.patch('/api/computer-schedule/:rowIdx/paid',auth,async(req,res)=>{
   try{
     const idx=parseInt(req.params.rowIdx)
     const schedule=await readSheet('COMPUTER_INSTALLMENT_SCHEDULE!A2:H')
@@ -479,22 +465,24 @@ app.patch('/api/computer-schedule/:rowIdx/paid',auth,upload.single('file'),async
     const turningOn = row[4]!=='TRUE'
     const updated=[...row]
     updated[4]=turningOn?'TRUE':'FALSE'
-    if(turningOn){
-      updated[5]=new Date().toLocaleDateString('th-TH')
-      if(req.file){
-        const records=await readSheet('COMPUTER_INSTALLMENT!A2:N')
-        const rec=records.find(r=>r[0]===row[0])
-        if(rec&&rec[11]){
-          const ext=(req.file.originalname.match(/\.[^.]+$/)||['.jpg'])[0]
-          const label=Number(row[1])===0?'ดาวน์':'งวด'+String(row[1]).padStart(2,'0')
-          const {id:fileId,url}=await driveUpload(label+ext,rec[11],req.file.buffer,req.file.mimetype)
-          updated[6]=fileId;updated[7]=url
-        }
-      }
-    }
+    updated[5]=turningOn?new Date().toLocaleDateString('th-TH'):''
     await updateRow('COMPUTER_INSTALLMENT_SCHEDULE',idx,updated.slice(0,8))
     await log(req.user,'COMPUTER_TOGGLE_PAID',`${turningOn?'ทำเครื่องหมายจ่ายแล้ว':'ยกเลิกจ่ายแล้ว'} ${row[0]} งวด ${row[1]}`)
     res.json({ok:true,paid:updated[4]})
+  }catch(e){res.status(500).json({ok:false,error:e.message})}
+})
+app.patch('/api/computer-schedule/:rowIdx/slip',auth,async(req,res)=>{
+  try{
+    const url=(req.body.url||'').trim()
+    if(!/^https?:\/\//.test(url)) return res.status(400).json({ok:false,error:'กรุณาวางลิงก์ไฟล์ที่ถูกต้อง'})
+    const idx=parseInt(req.params.rowIdx)
+    const schedule=await readSheet('COMPUTER_INSTALLMENT_SCHEDULE!A2:H')
+    const row=schedule[idx-2]
+    if(!row) return res.status(404).json({ok:false,error:'ไม่พบงวด'})
+    const updated=[...row];updated[7]=url
+    await updateRow('COMPUTER_INSTALLMENT_SCHEDULE',idx,updated.slice(0,8))
+    await log(req.user,'COMPUTER_SLIP',`แนบลิงก์สลิป ${row[0]} งวด ${row[1]}`)
+    res.json({ok:true,url})
   }catch(e){res.status(500).json({ok:false,error:e.message})}
 })
 
