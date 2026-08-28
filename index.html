@@ -259,6 +259,7 @@ tbody td{padding:10px 12px;border-bottom:1px solid #F5E9D6;vertical-align:middle
     <button class="nav-item nav-item-emp" onclick="nav('emp-dept',this);loadEmpDept()">🏢 แผนก</button>
     <button class="nav-item nav-item-emp" onclick="nav('emp-po-mgmt',this);loadEmpPOMgmt()">📄 PO Management</button>
     <button class="nav-item nav-item-emp" onclick="nav('emp-po',this);loadEmpPO()">✅ Acceptance by Por</button>
+    <button class="nav-item nav-item-emp" onclick="nav('computer',this);loadComputer()">💻 ผ่อนคอมพิวเตอร์</button>
     <button class="logout-btn" onclick="doLogout()">🚪 ออกจากระบบ</button>
   </aside>
 
@@ -467,6 +468,29 @@ tbody td{padding:10px 12px;border-bottom:1px solid #F5E9D6;vertical-align:middle
       </div>
       <div class="deptlist" id="emppo-dept-list"></div>
       <div id="emppo-po-list" style="margin-top:16px"></div>
+    </div>
+
+    <!-- COMPUTER INSTALLMENT (ผ่อนคอมพิวเตอร์) -->
+    <div class="page" id="page-computer">
+      <div class="topbar">
+        <div><div class="page-title">💻 ผ่อนคอมพิวเตอร์</div><div class="page-sub">ติดตามสถานะการผ่อนคอมของพนักงาน</div></div>
+        <div class="topbar-right">
+          <input class="s-in" id="computer-s" placeholder="🔍 ค้นหา ID หรือชื่อ..." style="width:200px" oninput="renderComputerT()">
+          <button class="btn btn-ghost" onclick="loadComputer()">🔄 รีเฟรช</button>
+          <button class="btn btn-green" onclick="exportComputer()">📥 Export Excel</button>
+          <button class="btn btn-primary" onclick="openComputerCreate()">➕ เพิ่มรายการ</button>
+        </div>
+      </div>
+      <div class="stats-emp" id="computer-stats"></div>
+      <div class="card"><div class="tbl-wrap">
+        <table>
+          <thead><tr>
+            <th style="padding-left:14px">ID</th><th>ชื่อ</th><th>เครื่องที่</th><th>ราคาเครื่อง</th><th>งวด</th>
+            <th>เดือนเริ่มผ่อน</th><th>ผ่อนแล้ว</th><th>คงเหลือ</th><th>สถานะ</th><th>จัดการ</th>
+          </tr></thead>
+          <tbody id="computer-tbody"></tbody>
+        </table>
+      </div></div>
     </div>
 
     <!-- TRACKING NO. -->
@@ -706,6 +730,36 @@ tbody td{padding:10px 12px;border-bottom:1px solid #F5E9D6;vertical-align:middle
   </div>
 </div></div>
 
+<!-- MODAL: Computer installment create/edit -->
+<div class="mbg" id="m-computer"><div class="modal" style="max-width:520px">
+  <div class="modal-hdr"><div class="modal-title" id="computer-modal-title">➕ เพิ่มรายการผ่อนคอม</div><button class="modal-x" onclick="closeM('m-computer')">✕</button></div>
+  <div class="modal-body">
+    <div class="frow">
+      <div class="fg"><label>พนักงาน (CT ID / ชื่อ) *</label><input class="fi2" type="text" id="computer-emp" list="empDatalist" placeholder="เช่น CT65389" style="width:100%"></div>
+      <div class="fg"><label>ราคาเครื่อง (บาท) *</label><input class="fi2" type="number" id="computer-price" placeholder="22990" oninput="computerPreview()" style="width:100%"></div>
+    </div>
+    <div class="frow">
+      <div class="fg"><label>จำนวนงวด</label><input class="fi2" type="number" id="computer-installments" value="10" oninput="computerPreview()" style="width:100%"></div>
+      <div class="fg"><label>เดือนเริ่มผ่อน *</label><input class="fi2" type="month" id="computer-start" style="width:100%"></div>
+    </div>
+    <div style="background:#F0F4FF;border-radius:10px;padding:12px 14px;margin-bottom:14px;font-size:13px;color:#1E3A5F" id="computer-preview">กรอกราคาและจำนวนงวดเพื่อดูตัวอย่างการคำนวณ</div>
+    <div class="fg"><label>ไฟล์สัญญา (PDF, แนบภายหลังได้)</label><input class="fi2" type="file" id="computer-contract-file" accept=".pdf" style="width:100%"></div>
+    <div style="display:flex;gap:8px;margin-top:6px">
+      <button class="btn btn-primary" id="computer-modal-btn" onclick="saveComputer()">💾 บันทึก</button>
+      <button class="btn btn-ghost" onclick="closeM('m-computer')">ยกเลิก</button>
+    </div>
+  </div>
+</div></div>
+
+<!-- MODAL: Computer installment schedule detail -->
+<div class="mbg" id="m-computer-schedule"><div class="modal" style="max-width:560px">
+  <div class="modal-hdr"><div class="modal-title" id="computer-sched-title">📋 ตารางผ่อน</div><button class="modal-x" onclick="closeM('m-computer-schedule')">✕</button></div>
+  <div class="modal-body">
+    <div id="computer-sched-info" style="margin-bottom:12px;font-size:13px;color:var(--muted)"></div>
+    <div id="computer-sched-rows"></div>
+  </div>
+</div></div>
+
 <!-- MODAL: Edit OT -->
 <div class="mbg" id="m-ot-edit"><div class="modal" style="max-width:460px">
   <div class="modal-hdr"><div class="modal-title">✏️ แก้ไขล่วงเวลาทำงาน</div><button class="modal-x" onclick="closeM('m-ot-edit')">✕</button></div>
@@ -850,6 +904,12 @@ async function api(m,p,b){
   const o={method:m,headers:{'Content-Type':'application/json','Authorization':`Bearer ${TOKEN}`}}
   if(b) o.body=JSON.stringify(b)
   const r=await fetch(p,o);const d=await r.json()
+  if(r.status===401){doLogout();return{ok:false}}
+  return d
+}
+async function apiUpload(m,p,formData){
+  const r=await fetch(p,{method:m,headers:{'Authorization':`Bearer ${TOKEN}`},body:formData})
+  const d=await r.json()
   if(r.status===401){doLogout();return{ok:false}}
   return d
 }
@@ -1785,6 +1845,180 @@ function exportOT(){
   dlXLSX([hdr,...rows],`OT_Export_${today()}.xlsx`)
   toast('Export ล่วงเวลาทำงานสำเร็จ ✅','success')
 }
+// ---- Computer installment (ผ่อนคอมพิวเตอร์) ----
+let C_COMPUTER=[],C_COMPUTER_SCHEDULE=[]
+let COMPUTER_EDIT_TARGET=null
+async function loadComputer(){
+  spin(true)
+  const[c,s]=await Promise.all([api('GET','/api/computer'),api('GET','/api/computer-schedule')])
+  C_COMPUTER=c.data||[];C_COMPUTER_SCHEDULE=s.data||[]
+  renderComputerT()
+  spin(false)
+}
+function computerScheduleFor(id){ return C_COMPUTER_SCHEDULE.filter(r=>r[0]===id) }
+function computerPaidTotal(id){ return computerScheduleFor(id).filter(r=>r[4]==='TRUE').reduce((s,r)=>s+Number(r[3]||0),0) }
+function computerRemaining(rec){ return Math.max(0,round2(Number(rec[4]||0)-computerPaidTotal(rec[0]))) }
+function computerIsFinished(rec){ return computerRemaining(rec)<=0 }
+function round2(n){ return Math.round(n*100)/100 }
+function renderComputerT(){
+  const q=(document.getElementById('computer-s').value||'').toLowerCase()
+  const list=C_COMPUTER.filter(r=>!q||r[1].toLowerCase().includes(q)||(r[2]||'').toLowerCase().includes(q))
+  const finished=C_COMPUTER.filter(computerIsFinished).length
+  const totalRemaining=C_COMPUTER.reduce((s,r)=>s+computerRemaining(r),0)
+  document.getElementById('computer-stats').innerHTML=`
+    <button class="stat-card sc-blue" type="button"><div class="stat-icon">💻</div><div class="stat-num">${C_COMPUTER.length}</div><div class="stat-label">รายการทั้งหมด</div></button>
+    <button class="stat-card sc-amber" type="button"><div class="stat-icon">⏳</div><div class="stat-num">${C_COMPUTER.length-finished}</div><div class="stat-label">ยังผ่อนอยู่</div></button>
+    <button class="stat-card sc-teal" type="button"><div class="stat-icon">✅</div><div class="stat-num">${finished}</div><div class="stat-label">ผ่อนเสร็จแล้ว</div></button>
+    <button class="stat-card sc-coral" type="button"><div class="stat-icon">💰</div><div class="stat-num" style="font-size:18px">฿${num(totalRemaining)}</div><div class="stat-label">ยอดคงค้างรวม (บาท)</div></button>`
+  document.getElementById('computer-tbody').innerHTML=list.length?list.map(r=>{
+    const [id,empId,empName,machineNo,price,installments,,,startMonth,,contractUrl]=r
+    const paid=computerPaidTotal(id),remaining=computerRemaining(r),done=computerIsFinished(r)
+    return `<tr>
+      <td style="padding-left:14px;font-weight:600;color:var(--blue)">${esc(empId)}</td>
+      <td style="font-weight:600">${esc(empName)}</td>
+      <td style="text-align:center;color:var(--muted)">${esc(machineNo)}</td>
+      <td style="font-weight:700">฿${num(price)}</td>
+      <td style="text-align:center;color:var(--muted)">${esc(installments)}</td>
+      <td style="font-size:12px;color:var(--muted)">${esc(startMonth)}</td>
+      <td style="color:var(--green);font-weight:700">฿${num(paid)}</td>
+      <td style="color:${done?'var(--green)':'#F43F5E'};font-weight:700">฿${num(remaining)}</td>
+      <td><span class="tag ${done?'t-green':'t-amber'}">${done?'✅ เสร็จแล้ว':'⏳ ผ่อนอยู่'}</span></td>
+      <td><div style="display:flex;gap:4px;flex-wrap:wrap">
+        <button class="btn btn-ghost btn-sm" onclick="openComputerSchedule('${id}')" title="ตารางผ่อน">📋</button>
+        ${contractUrl?`<button class="btn btn-ghost btn-sm" onclick="window.open('${esc(contractUrl)}','_blank')" title="ดูสัญญา">📄</button>`:''}
+        <button class="btn btn-amber btn-sm" onclick="openComputerEdit('${id}')" title="แก้ไข">✏️</button>
+        <button class="btn btn-red btn-sm" onclick="deleteComputer('${id}')" title="ลบ">🗑️</button>
+      </div></td>
+    </tr>`
+  }).join(''):`<tr><td colspan="10" style="text-align:center;padding:24px;color:var(--muted)">ไม่มีรายการ${q?' ที่ค้นหา':''}</td></tr>`
+}
+function computerComputePlan(price,installments){
+  const down = price>30000 ? round2(price-30000) : 0
+  const base = round2(price-down)
+  const monthly = installments>0 ? round2(base/installments) : 0
+  return {down,monthly}
+}
+function computerPreview(){
+  const price=Number(document.getElementById('computer-price').value)||0
+  const inst=parseInt(document.getElementById('computer-installments').value)||10
+  const el=document.getElementById('computer-preview')
+  if(!price){el.textContent='กรอกราคาและจำนวนงวดเพื่อดูตัวอย่างการคำนวณ';return}
+  const {down,monthly}=computerComputePlan(price,inst)
+  el.innerHTML = down>0
+    ? `💰 ต้องดาวน์ <strong>฿${num(down)}</strong> ก่อน แล้วผ่อนเดือนละ <strong>฿${num(monthly)}</strong> × ${inst} งวด`
+    : `💰 ผ่อนเดือนละ <strong>฿${num(monthly)}</strong> × ${inst} งวด (ไม่ต้องดาวน์)`
+}
+function openComputerCreate(){
+  COMPUTER_EDIT_TARGET=null
+  document.getElementById('computer-modal-title').textContent='➕ เพิ่มรายการผ่อนคอม'
+  document.getElementById('computer-modal-btn').textContent='💾 บันทึก'
+  document.getElementById('computer-emp').value=''
+  document.getElementById('computer-emp').disabled=false
+  document.getElementById('computer-price').value=''
+  document.getElementById('computer-installments').value='10'
+  document.getElementById('computer-start').value=''
+  document.getElementById('computer-contract-file').value=''
+  document.getElementById('computer-preview').textContent='กรอกราคาและจำนวนงวดเพื่อดูตัวอย่างการคำนวณ'
+  document.getElementById('m-computer').classList.add('show')
+}
+function openComputerEdit(id){
+  const rec=C_COMPUTER.find(r=>r[0]===id)
+  if(!rec) return
+  COMPUTER_EDIT_TARGET=id
+  document.getElementById('computer-modal-title').textContent='✏️ แก้ไขรายการผ่อนคอม'
+  document.getElementById('computer-modal-btn').textContent='💾 บันทึกการแก้ไข'
+  document.getElementById('computer-emp').value=`${rec[1]} — ${rec[2]}`
+  document.getElementById('computer-emp').disabled=true
+  document.getElementById('computer-price').value=rec[4]
+  document.getElementById('computer-installments').value=rec[5]
+  document.getElementById('computer-start').value=rec[8]
+  document.getElementById('computer-contract-file').value=''
+  computerPreview()
+  document.getElementById('m-computer').classList.add('show')
+}
+async function saveComputer(){
+  const price=Number(document.getElementById('computer-price').value)
+  const installments=parseInt(document.getElementById('computer-installments').value)||10
+  const startMonth=document.getElementById('computer-start').value
+  if(!price||price<=0||!startMonth){toast('กรุณากรอกราคาและเดือนเริ่มผ่อน','error');return}
+  setLoad('computer-modal-btn',true)
+  let r
+  if(COMPUTER_EDIT_TARGET){
+    r=await api('PUT',`/api/computer/${enc(COMPUTER_EDIT_TARGET)}`,{price,installments,startMonth})
+  }else{
+    const empId=parseEmpInput(document.getElementById('computer-emp').value)
+    if(!empId){toast('กรุณาเลือกพนักงานจากรายชื่อ','error');setLoad('computer-modal-btn',false);return}
+    const emp=empById(empId)
+    r=await api('POST','/api/computer',{employeeId:empId,employeeName:emp[1],price,installments,startMonth})
+  }
+  setLoad('computer-modal-btn',false)
+  if(!r.ok){toast(r.error||'เกิดข้อผิดพลาด','error');return}
+  const recId=COMPUTER_EDIT_TARGET||r.id
+  const file=document.getElementById('computer-contract-file').files[0]
+  if(file){
+    const fd=new FormData();fd.append('file',file)
+    const ur=await apiUpload('PATCH',`/api/computer/${enc(recId)}/contract`,fd)
+    if(!ur.ok) toast('บันทึกรายการสำเร็จ แต่แนบสัญญาไม่สำเร็จ: '+(ur.error||''),'error')
+  }
+  toast(COMPUTER_EDIT_TARGET?'บันทึกการแก้ไขแล้ว':'เพิ่มรายการแล้ว','success')
+  closeM('m-computer')
+  loadComputer()
+}
+function deleteComputer(id){
+  const rec=C_COMPUTER.find(r=>r[0]===id)
+  document.getElementById('del-num').textContent=`รายการผ่อนคอม ${rec?rec[1]+' '+rec[2]:id}`
+  document.getElementById('m-del').classList.add('show')
+  window._delConfirmFn=async function(){
+    const r=await api('DELETE',`/api/computer/${enc(id)}`)
+    if(r.ok){toast('ลบสำเร็จ','success');loadComputer()}
+    else toast(r.error||'เกิดข้อผิดพลาด','error')
+  }
+}
+function openComputerSchedule(id){
+  const rec=C_COMPUTER.find(r=>r[0]===id)
+  if(!rec) return
+  document.getElementById('computer-sched-title').textContent=`📋 ตารางผ่อน — ${rec[2]} (${rec[1]})`
+  document.getElementById('computer-sched-info').innerHTML=`ราคาเครื่อง ฿${num(rec[4])} · เครื่องที่ ${esc(rec[3])} · เริ่มผ่อน ${esc(rec[8])}`
+  renderComputerScheduleRows(id)
+  document.getElementById('m-computer-schedule').classList.add('show')
+}
+function renderComputerScheduleRows(id){
+  const rows=C_COMPUTER_SCHEDULE.map((r,idx)=>({r,idx:idx+2})).filter(x=>x.r[0]===id)
+  document.getElementById('computer-sched-rows').innerHTML=rows.map(({r,idx})=>{
+    const label=Number(r[1])===0?'เงินดาวน์':'งวดที่ '+r[1]
+    const paid=r[4]==='TRUE'
+    const slipUrl=r[7]
+    return `<div class="po-item-row" style="align-items:center">
+      <div><div style="font-weight:600;font-size:13px">${label} · ${esc(r[2])}</div><div style="font-size:12px;color:var(--muted)">฿${num(r[3])}</div></div>
+      <div style="display:flex;align-items:center;gap:6px">
+        ${slipUrl?`<button class="btn btn-ghost btn-sm" onclick="window.open('${esc(slipUrl)}','_blank')" title="ดูสลิป">📎</button>`:
+          `<input type="file" accept="image/*" id="computer-slip-${idx}" style="display:none" onchange="toggleComputerPaid(${idx},true)">
+           <button class="btn btn-ghost btn-sm" onclick="document.getElementById('computer-slip-${idx}').click()" title="แนบสลิปแล้วบันทึก">📎</button>`}
+        <button type="button" class="btn ${paid?'btn-green':'btn-ghost'} btn-sm" onclick="toggleComputerPaid(${idx},false)">${paid?'✅ จ่ายแล้ว':'⏳ ยังไม่จ่าย'}</button>
+      </div>
+    </div>`
+  }).join('')
+}
+async function toggleComputerPaid(rowIdx,fromFileInput){
+  const fd=new FormData()
+  if(fromFileInput){
+    const fileEl=document.getElementById('computer-slip-'+rowIdx)
+    if(fileEl&&fileEl.files[0]) fd.append('file',fileEl.files[0])
+  }
+  const r=await apiUpload('PATCH',`/api/computer-schedule/${rowIdx}/paid`,fd)
+  if(!r.ok){toast(r.error||'เกิดข้อผิดพลาด','error');return}
+  await loadComputer()
+  const row=C_COMPUTER_SCHEDULE[rowIdx-2]
+  if(row) renderComputerScheduleRows(row[0])
+}
+function exportComputer(){
+  loadXLSX(()=>{
+    const hdr=['ID','ชื่อ','เครื่องที่','ราคาเครื่อง','งวด','เดือนเริ่มผ่อน','ผ่อนแล้ว','คงเหลือ','สถานะ']
+    const rows=C_COMPUTER.map(r=>[r[1],r[2],r[3],r[4],r[5],r[8],computerPaidTotal(r[0]),computerRemaining(r),computerIsFinished(r)?'เสร็จแล้ว':'ผ่อนอยู่'])
+    dlXLSX([hdr,...rows],`ผ่อนคอมพิวเตอร์_${today()}.xlsx`)
+  })
+}
+
 function dlXLSX(rows,fn){
   loadXLSX(()=>{
     const ws=XLSX.utils.aoa_to_sheet(rows)

@@ -4,14 +4,19 @@ const cors    = require('cors')
 const { google } = require('googleapis')
 const path   = require('path')
 const crypto = require('crypto')
+const multer = require('multer')
 
 const app = express()
 app.use(cors())
 app.use(express.json({ limit: '10mb' }))
 app.use(express.static(path.join(__dirname)))
 
+const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 15 * 1024 * 1024 } })
+
 const SHEET_ID   = process.env.SPREADSHEET_ID
 const JWT_SECRET = process.env.JWT_SECRET || 'po-check-secret-2024'
+const CONTRACT_FOLDER_ID = '1a5qvwCqFk2qcFijdLabjz-F9holEVSpu' // Drive: CT_สัญญาผ่อนคอม
+const SLIP_FOLDER_ID     = '1h6t8oOD8UyehTPQRytFMrvbIGDtW-wjH' // Drive: CT_สลิปผ่อนคอม
 
 const USERS = [
   { name: process.env.USER1_NAME || 'ปอ',       email: process.env.USER1_EMAIL || 'po@co.com',                password: process.env.USER1_PASS || 'po1234' },
@@ -73,11 +78,53 @@ function normalizeMonth(val){
   return val
 }
 
+// Computer installment plan: price>30,000 requires a down payment of (price-30,000) up front,
+// and only the remaining 30,000 is split across the installments. Otherwise split the full price.
+function computeInstallmentPlan(price,installments){
+  const down = price>30000 ? round2(price-30000) : 0
+  const base = round2(price-down)
+  const monthly = round2(base/installments)
+  return {down,monthly,base}
+}
+function round2(n){ return Math.round(n*100)/100 }
+function addMonth(ym,n){
+  let [y,m]=ym.split('-').map(Number)
+  m+=n
+  while(m>12){m-=12;y++}
+  while(m<1){m+=12;y--}
+  return y+'-'+String(m).padStart(2,'0')
+}
+function buildSchedule(recordId,price,installments,startMonth){
+  const {down,monthly,base}=computeInstallmentPlan(price,installments)
+  const rows=[]
+  if(down>0) rows.push([recordId,0,startMonth,down,'FALSE','','',''])
+  let allocated=0
+  for(let i=1;i<=installments;i++){
+    const amt = i===installments ? round2(base-allocated) : monthly
+    allocated=round2(allocated+amt)
+    rows.push([recordId,i,addMonth(startMonth,i-1),amt,'FALSE','','',''])
+  }
+  return rows
+}
+
 function ga(){
   return new google.auth.GoogleAuth({
     credentials:JSON.parse(process.env.GOOGLE_SERVICE_ACCOUNT_JSON),
-    scopes:['https://www.googleapis.com/auth/spreadsheets']
+    scopes:['https://www.googleapis.com/auth/spreadsheets','https://www.googleapis.com/auth/drive']
   })
+}
+function drive(){ return google.drive({version:'v3',auth:ga()}) }
+async function driveUpload(name,parentId,buffer,mimeType){
+  const r=await drive().files.create({
+    requestBody:{name,parents:[parentId]},
+    media:{mimeType:mimeType||'application/octet-stream',body:require('stream').Readable.from(buffer)},
+    fields:'id,webViewLink'
+  })
+  return {id:r.data.id,url:r.data.webViewLink}
+}
+async function driveCreateFolder(name,parentId){
+  const r=await drive().files.create({requestBody:{name,mimeType:'application/vnd.google-apps.folder',parents:[parentId]},fields:'id'})
+  return r.data.id
 }
 async function readSheet(range){
   const r=await google.sheets({version:'v4',auth:ga()}).spreadsheets.values.get({spreadsheetId:SHEET_ID,range})
@@ -328,6 +375,126 @@ app.put('/api/emp-po/:poNo',auth,async(req,res)=>{
     if(newItemRows.length) await sheets.spreadsheets.values.append({spreadsheetId:SHEET_ID,range:'EMP_PO_ITEMS!A1',valueInputOption:'USER_ENTERED',requestBody:{values:newItemRows}})
     await log(req.user,'UPDATE_EMP_PO',`แก้ไข PO ${req.params.poNo} (${newItemRows.length} คน)`)
     res.json({ok:true})
+  }catch(e){res.status(500).json({ok:false,error:e.message})}
+})
+
+// COMPUTER_INSTALLMENT / COMPUTER_INSTALLMENT_SCHEDULE — ผ่อนคอมพิวเตอร์. Separate new sheets; Drive folders shared with the service account.
+app.get('/api/computer',auth,async(req,res)=>{
+  try{res.json({ok:true,data:await readSheet('COMPUTER_INSTALLMENT!A2:N')})}
+  catch(e){res.status(500).json({ok:false,error:e.message})}
+})
+app.get('/api/computer-schedule',auth,async(req,res)=>{
+  try{res.json({ok:true,data:await readSheet('COMPUTER_INSTALLMENT_SCHEDULE!A2:H')})}
+  catch(e){res.status(500).json({ok:false,error:e.message})}
+})
+app.post('/api/computer',auth,async(req,res)=>{
+  try{
+    const{employeeId,employeeName,price,installments,startMonth}=req.body
+    const priceNum=Number(price),instNum=parseInt(installments)||10
+    if(!employeeId||!employeeName||!priceNum||priceNum<=0||!startMonth) return res.status(400).json({ok:false,error:'กรุณากรอกข้อมูลให้ครบ (พนักงาน, ราคาเครื่อง, เดือนเริ่มผ่อน)'})
+    const existing=await readSheet('COMPUTER_INSTALLMENT!A2:N')
+    const machineNo=existing.filter(r=>r[1]===employeeId).length+1
+    const {down,monthly}=computeInstallmentPlan(priceNum,instNum)
+    const folderName=`${employeeId}_${employeeName}${machineNo>1?' เครื่องที่'+machineNo:''}`
+    const slipFolderId=await driveCreateFolder(folderName,SLIP_FOLDER_ID)
+    const id='COMP'+Date.now()
+    const now=new Date().toLocaleString('th-TH')
+    await appendRow('COMPUTER_INSTALLMENT',[id,employeeId,employeeName,machineNo,priceNum,instNum,down,monthly,startMonth,'','',slipFolderId,req.user.name,now])
+    const scheduleRows=buildSchedule(id,priceNum,instNum,startMonth)
+    await google.sheets({version:'v4',auth:ga()}).spreadsheets.values.append({spreadsheetId:SHEET_ID,range:'COMPUTER_INSTALLMENT_SCHEDULE!A1',valueInputOption:'USER_ENTERED',requestBody:{values:scheduleRows}})
+    await log(req.user,'CREATE_COMPUTER',`เพิ่มรายการผ่อนคอม ${employeeId} ${employeeName} เครื่องที่ ${machineNo} ราคา ${priceNum}`)
+    res.json({ok:true,id})
+  }catch(e){res.status(500).json({ok:false,error:e.message})}
+})
+app.put('/api/computer/:id',auth,async(req,res)=>{
+  try{
+    const{price,installments,startMonth}=req.body
+    const priceNum=Number(price),instNum=parseInt(installments)||10
+    if(!priceNum||priceNum<=0||!startMonth) return res.status(400).json({ok:false,error:'กรุณากรอกข้อมูลให้ครบ'})
+    const rows=await readSheet('COMPUTER_INSTALLMENT!A2:N')
+    const i=rows.findIndex(r=>r[0]===req.params.id)
+    if(i===-1) return res.status(404).json({ok:false,error:'ไม่พบรายการ'})
+    const schedule=await readSheet('COMPUTER_INSTALLMENT_SCHEDULE!A2:H')
+    const mine=schedule.map((r,idx)=>({r,idx})).filter(x=>x.r[0]===req.params.id)
+    if(mine.some(x=>x.r[4]==='TRUE')) return res.status(400).json({ok:false,error:'มีงวดที่จ่ายแล้ว ไม่สามารถแก้ไขราคา/จำนวนงวดได้ กรุณาลบแล้วสร้างใหม่หากจำเป็น'})
+    const orig=rows[i]
+    const {down,monthly}=computeInstallmentPlan(priceNum,instNum)
+    const updated=[...orig];updated[4]=priceNum;updated[5]=instNum;updated[6]=down;updated[7]=monthly;updated[8]=startMonth
+    await updateRow('COMPUTER_INSTALLMENT',i+2,updated.slice(0,14))
+    if(mine.length){
+      const sheets=google.sheets({version:'v4',auth:ga()})
+      const meta=await sheets.spreadsheets.get({spreadsheetId:SHEET_ID})
+      const sh=meta.data.sheets.find(s=>s.properties.title==='COMPUTER_INSTALLMENT_SCHEDULE')
+      const requests=mine.map(x=>x.idx+2).sort((a,b)=>b-a).map(rowNum=>({deleteDimension:{range:{sheetId:sh.properties.sheetId,dimension:'ROWS',startIndex:rowNum-1,endIndex:rowNum}}}))
+      await sheets.spreadsheets.batchUpdate({spreadsheetId:SHEET_ID,requestBody:{requests}})
+    }
+    const scheduleRows=buildSchedule(req.params.id,priceNum,instNum,startMonth)
+    await google.sheets({version:'v4',auth:ga()}).spreadsheets.values.append({spreadsheetId:SHEET_ID,range:'COMPUTER_INSTALLMENT_SCHEDULE!A1',valueInputOption:'USER_ENTERED',requestBody:{values:scheduleRows}})
+    await log(req.user,'UPDATE_COMPUTER',`แก้ไขรายการผ่อนคอม ${req.params.id}`)
+    res.json({ok:true})
+  }catch(e){res.status(500).json({ok:false,error:e.message})}
+})
+app.delete('/api/computer/:id',auth,async(req,res)=>{
+  try{
+    const rows=await readSheet('COMPUTER_INSTALLMENT!A2:N')
+    const i=rows.findIndex(r=>r[0]===req.params.id)
+    if(i===-1) return res.status(404).json({ok:false,error:'ไม่พบรายการ'})
+    await deleteRow('COMPUTER_INSTALLMENT',i+2)
+    const schedule=await readSheet('COMPUTER_INSTALLMENT_SCHEDULE!A2:H')
+    const delIdx=schedule.map((r,idx)=>({r,idx})).filter(x=>x.r[0]===req.params.id).map(x=>x.idx+2)
+    if(delIdx.length){
+      const sheets=google.sheets({version:'v4',auth:ga()})
+      const meta=await sheets.spreadsheets.get({spreadsheetId:SHEET_ID})
+      const sh=meta.data.sheets.find(s=>s.properties.title==='COMPUTER_INSTALLMENT_SCHEDULE')
+      const requests=delIdx.sort((a,b)=>b-a).map(rowNum=>({deleteDimension:{range:{sheetId:sh.properties.sheetId,dimension:'ROWS',startIndex:rowNum-1,endIndex:rowNum}}}))
+      await sheets.spreadsheets.batchUpdate({spreadsheetId:SHEET_ID,requestBody:{requests}})
+    }
+    await log(req.user,'DELETE_COMPUTER',`ลบรายการผ่อนคอม ${req.params.id} (${rows[i][1]} ${rows[i][2]})`)
+    res.json({ok:true})
+  }catch(e){res.status(500).json({ok:false,error:e.message})}
+})
+app.patch('/api/computer/:id/contract',auth,upload.single('file'),async(req,res)=>{
+  try{
+    if(!req.file) return res.status(400).json({ok:false,error:'กรุณาแนบไฟล์'})
+    const rows=await readSheet('COMPUTER_INSTALLMENT!A2:N')
+    const i=rows.findIndex(r=>r[0]===req.params.id)
+    if(i===-1) return res.status(404).json({ok:false,error:'ไม่พบรายการ'})
+    const row=rows[i]
+    const machineSuffix=Number(row[3])>1?' เครื่องที่'+row[3]:''
+    const ext=(req.file.originalname.match(/\.[^.]+$/)||['.pdf'])[0]
+    const name=`${row[1]}_สัญญาผ่อนคอม_${row[2]}${machineSuffix}${ext}`
+    const {id:fileId,url}=await driveUpload(name,CONTRACT_FOLDER_ID,req.file.buffer,req.file.mimetype)
+    const updated=[...row];updated[9]=fileId;updated[10]=url
+    await updateRow('COMPUTER_INSTALLMENT',i+2,updated.slice(0,14))
+    await log(req.user,'COMPUTER_CONTRACT',`แนบสัญญาผ่อนคอม ${req.params.id} (${row[1]} ${row[2]})`)
+    res.json({ok:true,url})
+  }catch(e){res.status(500).json({ok:false,error:e.message})}
+})
+app.patch('/api/computer-schedule/:rowIdx/paid',auth,upload.single('file'),async(req,res)=>{
+  try{
+    const idx=parseInt(req.params.rowIdx)
+    const schedule=await readSheet('COMPUTER_INSTALLMENT_SCHEDULE!A2:H')
+    const row=schedule[idx-2]
+    if(!row) return res.status(404).json({ok:false,error:'ไม่พบงวด'})
+    const turningOn = row[4]!=='TRUE'
+    const updated=[...row]
+    updated[4]=turningOn?'TRUE':'FALSE'
+    if(turningOn){
+      updated[5]=new Date().toLocaleDateString('th-TH')
+      if(req.file){
+        const records=await readSheet('COMPUTER_INSTALLMENT!A2:N')
+        const rec=records.find(r=>r[0]===row[0])
+        if(rec&&rec[11]){
+          const ext=(req.file.originalname.match(/\.[^.]+$/)||['.jpg'])[0]
+          const label=Number(row[1])===0?'ดาวน์':'งวด'+String(row[1]).padStart(2,'0')
+          const {id:fileId,url}=await driveUpload(label+ext,rec[11],req.file.buffer,req.file.mimetype)
+          updated[6]=fileId;updated[7]=url
+        }
+      }
+    }
+    await updateRow('COMPUTER_INSTALLMENT_SCHEDULE',idx,updated.slice(0,8))
+    await log(req.user,'COMPUTER_TOGGLE_PAID',`${turningOn?'ทำเครื่องหมายจ่ายแล้ว':'ยกเลิกจ่ายแล้ว'} ${row[0]} งวด ${row[1]}`)
+    res.json({ok:true,paid:updated[4]})
   }catch(e){res.status(500).json({ok:false,error:e.message})}
 })
 
